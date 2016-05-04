@@ -140,6 +140,102 @@ var retrieve = function (key, q, endpoint, opts) {
   return combined.pipe(counter).pipe(result)
 }
 
+var retrieveFromHistory = function (key, opts) {
+  var result = new Parser({objectMode: true})
+    , combined = ss()
+    , opts = opts || {}
+    , i = opts.max
+    , partsFound = 0
+
+  var loop = function(page) {
+    var reqOpts = {
+      url: api + '/gmail/v1/users/me/history',
+      json: true,
+      timeout: opts.timeout,
+      qs: {
+        startHistoryId: opts.historyId
+      },
+      headers: {
+        'Authorization': 'Bearer ' + key
+      }
+    }
+
+    var query = formQuery({fields : opts.fields, format : opts.format})
+
+    if (page) reqOpts.qs.pageToken = page
+    request(reqOpts, function (err, response, body) {
+      if (err) {
+        return result.emit('error', err)
+      }
+
+      if (body.error) {
+        return result.emit('error', new Error(body.error.message))
+      }
+
+      if (!body.history || !body.history.length) {
+        return result.end()
+      }
+
+      var messages = []
+      body.history.forEach(function (m) {
+        if (m.messagesAdded) {
+          m.messagesAdded.forEach(_m => {
+            if (!_m.message.labelIds.every(label => opts.excludeLabels.indexOf(label) === -1)) {
+              return
+            }
+
+            messages.push({
+              'Content-Type': 'application/http',
+              body: 'GET ' + api + '/gmail/v1/users/me/messages/' + _m.message.id + query + '\n'
+            })
+          })
+        }
+      })
+
+      messages.length = i < 100 ? i : 100
+
+      var r = request({
+        method: 'POST',
+        url: api + '/batch',
+        multipart: messages,
+        timeout: opts.timeout,
+        headers: {
+          'Authorization': 'Bearer ' + key,
+          'content-type': 'multipart/mixed'
+        }
+      })
+
+      r.on('error', function (e) {
+        result.emit('error', e)
+      })
+
+      r.on('response', function (res) {
+        var type = res.headers['content-type']
+          , form = new multiparty.Form
+
+        res.headers['content-type'] = type.replace('multipart/mixed', 'multipart/related')
+        form.on('part', function (part) {
+          partsFound++;
+          combined.write(part.pipe(split('\r\n')).pipe(new Parser))
+        }).parse(res)
+        form.on('close', function () {
+          if (opts.max !== partsFound && body.nextPageToken) return loop(body.nextPageToken)
+          combined.end()
+        })
+
+      })
+    })
+  }
+  loop()
+
+  var counter = through(function(obj, enc, cb) {
+    i--
+    cb(null, obj)
+  })
+
+  return combined.pipe(counter).pipe(result)
+}
+
 /*
  * Feteches the number of estimated messages matching the query
  * Invokes callback with err and estimated number
@@ -160,6 +256,10 @@ Gmail.prototype.estimatedMessages = function (q, opts, next) {
  */
 Gmail.prototype.messages = function (q, opts) {
   return retrieve(this.key, q, 'messages', opts)
+}
+
+Gmail.prototype.messagesAfterHistoryId = function (opts) {
+  return retrieveFromHistory(this.key, opts)
 }
 
 /*
