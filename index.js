@@ -180,7 +180,7 @@ var retrieveFromHistory = function (key, opts) {
       body.history.forEach(function (m) {
         if (m.messagesAdded) {
           m.messagesAdded.forEach(_m => {
-            if (!_m.message.labelIds.every(label => opts.excludeLabels.indexOf(label) === -1)) {
+            if (_m.message && _m.message.labelIds && !_m.message.labelIds.every(label => opts.excludeLabels.indexOf(label) === -1)) {
               return
             }
 
